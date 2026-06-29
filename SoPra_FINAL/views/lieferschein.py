@@ -1,5 +1,10 @@
+import html
+import json
+from datetime import date, datetime
+
 import streamlit as st
 import pandas as pd
+import streamlit.components.v1 as components
 
 import pagination
 from delivery_service import (
@@ -25,6 +30,299 @@ DELIVERY_IN_TRANSIT = 52
 DELIVERY_DELIVERED = 65
 DELIVERY_CANCELED = 66
 DELIVERY_RETOURNIERT = 68
+
+
+# -----------------------------------------------------------------------------
+# Druckfunktion
+# Erweitert die bestehende Ansicht nur um einen echten druckbaren Lieferschein.
+# Es wird keine Druckvorschau in Streamlit angezeigt; beim Klick wird direkt der
+# Browser-/Windows-Druckdialog für ein verstecktes Druckdokument geöffnet.
+# -----------------------------------------------------------------------------
+def _wert_ist_leer(wert):
+    """Prüft Datenbankwerte sicher auf None/NaN."""
+    try:
+        return pd.isna(wert)
+    except Exception:
+        return wert is None
+
+
+def _text(wert, fallback="—"):
+    """Formatiert Datenbankwerte robust als Text."""
+    if _wert_ist_leer(wert):
+        return fallback
+    text = str(wert).strip()
+    return text if text else fallback
+
+
+def _html(wert, fallback="—"):
+    """Escaped Text für die HTML-Druckansicht."""
+    return html.escape(_text(wert, fallback))
+
+
+def _datum(wert):
+    """Formatiert Datum für den Lieferschein im deutschen Format."""
+    if _wert_ist_leer(wert):
+        return "—"
+
+    if isinstance(wert, pd.Timestamp):
+        return wert.strftime("%d.%m.%Y")
+
+    if isinstance(wert, (datetime, date)):
+        return wert.strftime("%d.%m.%Y")
+
+    try:
+        datum = pd.to_datetime(wert)
+        if pd.isna(datum):
+            return _text(wert)
+        return datum.strftime("%d.%m.%Y")
+    except Exception:
+        return _text(wert)
+
+
+def _menge(wert):
+    """Zeigt Mengen ohne unnötige Nachkommastellen."""
+    if _wert_ist_leer(wert):
+        return "—"
+
+    try:
+        zahl = float(wert)
+        if zahl.is_integer():
+            return str(int(zahl))
+        return f"{zahl:g}"
+    except Exception:
+        return _text(wert)
+
+
+def _lieferadresse_zeilen(kopf_daten):
+    """Baut die Empfängeradresse aus den vorhandenen Lieferschein-Daten."""
+    zeilen = [
+        _text(kopf_daten.get("Kundenfirma"), ""),
+        _text(kopf_daten.get("Ansprechpartner"), ""),
+        _text(kopf_daten.get("Lieferadresse_Strasse"), ""),
+        " ".join(
+            teil
+            for teil in [
+                _text(kopf_daten.get("Lieferadresse_PLZ"), ""),
+                _text(kopf_daten.get("Lieferadresse_Ort"), ""),
+            ]
+            if teil
+        ),
+        _text(kopf_daten.get("Lieferadresse_Bundesland"), ""),
+    ]
+    return [zeile for zeile in zeilen if zeile]
+
+
+def _lieferschein_druck_html(details):
+    """Erzeugt das HTML-Dokument, das direkt an den Druckdialog gegeben wird."""
+    kopf_daten = details.iloc[0]
+    lieferdatum = _datum(kopf_daten.get("Lieferdatum"))
+    druckdatum = datetime.now().strftime("%d.%m.%Y")
+
+    empfaenger_html = "<br>".join(
+        html.escape(zeile) for zeile in _lieferadresse_zeilen(kopf_daten)
+    ) or "—"
+
+    positions_zeilen = []
+    for position, (_, zeile) in enumerate(details.iterrows(), start=1):
+        positions_zeilen.append(
+            "<tr>"
+            f"<td class='pos'>{position}</td>"
+            f"<td>{_html(zeile.get('Artikelnummer'))}</td>"
+            f"<td>{_html(zeile.get('Artikelbezeichnung'))}</td>"
+            f"<td class='menge'>{_menge(zeile.get('Menge'))}</td>"
+            "</tr>"
+        )
+
+    return f"""
+    <!doctype html>
+    <html lang="de">
+    <head>
+        <meta charset="utf-8">
+        <title>Lieferschein {_html(kopf_daten.get('LieferscheinID'), '')}</title>
+        <style>
+            @page {{ size: A4; margin: 14mm; }}
+            * {{ box-sizing: border-box; }}
+            body {{
+                margin: 0;
+                color: #111827;
+                font-family: Arial, Helvetica, sans-serif;
+                font-size: 12px;
+                line-height: 1.4;
+            }}
+            .kopf {{
+                display: flex;
+                justify-content: space-between;
+                gap: 24px;
+                border-bottom: 2px solid #111827;
+                padding-bottom: 16px;
+                margin-bottom: 24px;
+            }}
+            .titel {{ font-size: 28px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }}
+            .untertitel {{ margin-top: 6px; color: #6B7280; }}
+            .nummer {{ text-align: right; min-width: 210px; }}
+            .nummer-label {{ color: #6B7280; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }}
+            .nummer-wert {{ font-size: 22px; font-weight: 700; margin-top: 4px; }}
+            .adressbereich {{
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 18px;
+                margin-bottom: 22px;
+            }}
+            .box {{ border: 1px solid #D1D5DB; border-radius: 6px; padding: 12px; min-height: 105px; }}
+            .box h2 {{ margin: 0 0 8px; font-size: 11px; color: #6B7280; text-transform: uppercase; letter-spacing: .08em; }}
+            .box p {{ margin: 0; }}
+            .meta {{
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                border: 1px solid #D1D5DB;
+                margin-bottom: 22px;
+            }}
+            .meta div {{ padding: 9px 10px; border-right: 1px solid #D1D5DB; }}
+            .meta div:last-child {{ border-right: 0; }}
+            .meta span {{ display: block; color: #6B7280; font-size: 10px; margin-bottom: 4px; text-transform: uppercase; }}
+            .meta strong {{ font-size: 12px; }}
+            table {{ width: 100%; border-collapse: collapse; }}
+            th {{
+                background: #F3F4F6;
+                border-top: 1px solid #D1D5DB;
+                border-bottom: 1px solid #D1D5DB;
+                padding: 8px;
+                text-align: left;
+                font-size: 11px;
+                text-transform: uppercase;
+                letter-spacing: .04em;
+            }}
+            td {{ border-bottom: 1px solid #E5E7EB; padding: 9px 8px; vertical-align: top; }}
+            .pos {{ width: 42px; color: #6B7280; }}
+            .menge {{ width: 80px; text-align: right; font-weight: 700; }}
+            .hinweis {{
+                margin-top: 24px;
+                padding: 10px 12px;
+                border: 1px solid #E5E7EB;
+                background: #F9FAFB;
+            }}
+            .unterschriften {{ display: grid; grid-template-columns: 1fr 1fr; gap: 56px; margin-top: 58px; }}
+            .unterschrift {{ border-top: 1px solid #111827; padding-top: 7px; color: #6B7280; }}
+            .fuss {{
+                margin-top: 34px;
+                padding-top: 9px;
+                border-top: 1px solid #D1D5DB;
+                display: flex;
+                justify-content: space-between;
+                color: #6B7280;
+                font-size: 10px;
+            }}
+        </style>
+    </head>
+    <body>
+        <section class="kopf">
+            <div>
+                <div class="titel">Lieferschein</div>
+                <div class="untertitel">Warenbegleitdokument</div>
+            </div>
+            <div class="nummer">
+                <div class="nummer-label">Lieferschein-Nr.</div>
+                <div class="nummer-wert">{_html(kopf_daten.get('LieferscheinID'))}</div>
+            </div>
+        </section>
+
+        <section class="adressbereich">
+            <div class="box">
+                <h2>Lieferadresse</h2>
+                <p>{empfaenger_html}</p>
+            </div>
+            <div class="box">
+                <h2>Absenderadresse</h2>
+                <p>{_html(kopf_daten.get('Absenderadresse'))}</p>
+            </div>
+        </section>
+
+        <section class="meta">
+            <div><span>Kundenauftrag</span><strong>{_html(kopf_daten.get('KundenauftragID'))}</strong></div>
+            <div><span>Lieferdatum</span><strong>{lieferdatum}</strong></div>
+            <div><span>Status</span><strong>{_html(kopf_daten.get('Lieferstatus'))}</strong></div>
+            <div><span>Druckdatum</span><strong>{druckdatum}</strong></div>
+        </section>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Pos.</th>
+                    <th>Artikelnummer</th>
+                    <th>Artikelbezeichnung</th>
+                    <th class="menge">Menge</th>
+                </tr>
+            </thead>
+            <tbody>
+                {''.join(positions_zeilen)}
+            </tbody>
+        </table>
+
+        <div class="hinweis">
+            Bitte prüfen Sie die Lieferung bei Erhalt auf Vollständigkeit und sichtbare Beschädigungen.
+        </div>
+
+        <section class="unterschriften">
+            <div class="unterschrift">Ware ausgegeben / Versand</div>
+            <div class="unterschrift">Ware erhalten / Empfänger</div>
+        </section>
+
+        <section class="fuss">
+            <span>Lieferschein {_html(kopf_daten.get('LieferscheinID'))}</span>
+            <span>Automatisch erzeugt aus Lager &amp; Versand</span>
+        </section>
+    </body>
+    </html>
+    """
+
+
+def _druck_button_anzeigen(details):
+    """Zeigt nur das Drucker-Symbol und öffnet per Klick direkt den Druckdialog."""
+    druck_html = _lieferschein_druck_html(details)
+    components.html(
+        f"""
+        <style>
+            .druck-button {{
+                width: 100%;
+                min-height: 20px;
+                border: 1px solid #E2E2E5;
+                border-radius: 10px;
+                background: #FFFFFF;
+                color: #111827;
+                font-size: 18px;
+                cursor: pointer;
+            }}
+            .druck-button:hover {{ background: #FAFAFB; border-color: #C9C9CE; }}
+        </style>
+
+        <button class="druck-button" title="Lieferschein drucken" onclick="druckeLieferschein()">🖨️</button>
+
+        <script>
+            const lieferscheinHtml = {json.dumps(druck_html)};
+
+            function druckeLieferschein() {{
+                let frame = document.getElementById("print-frame");
+                if (!frame) {{
+                    frame = document.createElement("iframe");
+                    frame.id = "print-frame";
+                    frame.style.position = "absolute";
+                    frame.style.width = "0";
+                    frame.style.height = "0";
+                    frame.style.border = "0";
+                    frame.style.visibility = "hidden";
+                    document.body.appendChild(frame);
+                }}
+
+                frame.onload = function() {{
+                    frame.contentWindow.focus();
+                    frame.contentWindow.print();
+                }};
+                frame.srcdoc = lieferscheinHtml;
+            }}
+        </script>
+        """,
+        height=42,
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -164,9 +462,13 @@ def anzeigen():
         # =====================================================================
         # Detailansicht: zeigt den in der Tabelle ausgewählten Lieferschein
         # =====================================================================
-        st.subheader("Detailansicht")
+        detail_titel, detail_druck = st.columns([0.88, 0.12])
+        with detail_titel:
+            st.subheader("Detailansicht")
 
         if not auswahl.selection["rows"]:
+            with detail_druck:
+                st.button("🖨️", disabled=True, use_container_width=True, help="Bitte zuerst einen Lieferschein auswählen")
             st.info("Bitte in der Tabelle eine Zeile anklicken, um den Lieferschein zu öffnen.")
             return
 
@@ -175,6 +477,9 @@ def anzeigen():
 
         details = get_lieferschein_details(int(gewaehlt["LieferscheinID"]))
         kopf_daten = details.iloc[0]
+
+        with detail_druck:
+            _druck_button_anzeigen(details)
 
         spalte_links, spalte_rechts = st.columns(2)
 
