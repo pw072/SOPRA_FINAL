@@ -1,11 +1,8 @@
-# Farb-Theme (modern, rein gestalterisch).
 [theme]
 base = "light"
-primaryColor = "#2563EB"            # moderner Blau-Akzent
-backgroundColor = "#FFFFFF"         # Inhaltskarte / Eingabefelder
-secondaryBackgroundColor = "#F4F5F7" # Canvas / Sidebar-Flächen
-textColor = "#1D1D1F"
-font = "sans serif"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#111111"
 
 [theme.light]
 backgroundColor = "#ffffff"
